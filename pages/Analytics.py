@@ -8,6 +8,8 @@ import plotly.graph_objects as go
 import streamlit as st
 from utils import *
 
+st.set_page_config(layout="wide")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_path = os.path.join(BASE_DIR, "dashboard_memory.db")
 conn = sqlite3.connect(db_path, check_same_thread=False)

@@ -11,6 +11,8 @@ from datetime import datetime
 import datetime as dt
 import sqlite3
 
+st.set_page_config(layout="wide")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_path = os.path.join(BASE_DIR, "dashboard_memory.db")
 conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -24,6 +26,11 @@ st.title('Investments')
 monthly = c.execute("SELECT * FROM monthly_logs").fetchall()
 monthly_df = pd.DataFrame(monthly, columns=['date', 'account', 'inflows', 'outflows', 'end_value', 'unique_index'])
 monthly_df['date'] = pd.to_datetime(monthly_df['date'], format='%d/%m/%y')
+
+# collapse duplicate (account, date) rows — e.g. merged sub-accounts that both
+# reported in the same month — before computing month-over-month changes
+monthly_df = (monthly_df.groupby(['account', 'date'], as_index=False)
+               [['inflows', 'outflows', 'end_value']].sum())
 
 # calculate per-account capital gain and monthly return
 monthly_df = monthly_df.sort_values(['account', 'date'])

@@ -6,6 +6,33 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 import numpy as np
+import datetime as dt
+
+_MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+                "July", "August", "September", "October", "November", "December"]
+
+def month_input(label, value=None, key=None):
+    """Render a month/year picker and return the 1st of the selected month.
+
+    Records in this app are always keyed to the 1st of a month, so this
+    replaces st.date_input where a full calendar would let users pick
+    other days.
+    """
+    if value is None:
+        value = dt.date.today()
+    value = value.replace(day=1)
+
+    years = list(range(value.year - 5, value.year + 2))
+
+    col1, col2 = st.columns(2)
+    with col1:
+        month = st.selectbox(f"{label} (month)", _MONTH_NAMES, index=value.month - 1,
+                              key=f"{key}_month" if key else None)
+    with col2:
+        year = st.selectbox(f"{label} (year)", years, index=years.index(value.year),
+                             key=f"{key}_year" if key else None)
+
+    return dt.date(year, _MONTH_NAMES.index(month) + 1, 1)
 
 # Root directory (where utils.py lives) — used as canonical CSV export location
 _ROOT_DIR = os.path.dirname(os.path.abspath(__file__))

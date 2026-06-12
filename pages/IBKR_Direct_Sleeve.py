@@ -8,6 +8,8 @@ import streamlit as st
 
 import ibkr_analytics as ib
 
+st.set_page_config(layout="wide")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CSV = os.path.join(BASE_DIR, "Daily_Positions_MTM.csv")
 

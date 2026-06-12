@@ -5,6 +5,8 @@ import os
 import datetime as dt
 from utils import *
 
+st.set_page_config(layout="wide")
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 db_path = os.path.join(BASE_DIR, "dashboard_memory.db")
 conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -36,8 +38,8 @@ if st.session_state.randomize:
 
 accounts = all_data_df.platform.unique().tolist()
 
-raw_date = str(st.date_input("Record Date"))
-date = dt.datetime.strptime(raw_date, '%Y-%m-%d').strftime('%d/%m/%y')
+record_date = month_input("Record Date", key="insert")
+date = record_date.strftime('%d/%m/%y')
 
 income = st.number_input("Income", min_value=0)
 
@@ -90,7 +92,7 @@ if chosen_table == 'Monthly logs':
     record = all_data_df[all_data_df['label'] == selected_label].iloc[0]
 
     with st.form("Edit Monthly"):
-        new_date    = st.date_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date())
+        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key="edit_monthly")
         account     = st.text_input("Platform", value=record["platform"])
         inflows     = st.number_input("Inflows", value=int(record["inflows"]))
         outflows    = st.number_input("Outflows", value=int(record["outflows"]))
@@ -129,7 +131,7 @@ else:
     record = salary_data[salary_data['label'] == selected_label].iloc[0]
 
     with st.form("Edit Income"):
-        new_date    = st.date_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date())
+        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key="edit_income")
         income      = st.number_input("Income", value=int(record["income"]))
         confirm_del = st.checkbox("Confirm deletion")
 
