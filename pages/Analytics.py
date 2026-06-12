@@ -86,6 +86,18 @@ st.plotly_chart(fig2)
 
 st.subheader('Monthly Expenses')
 fig3 = px.bar(full_data, x='date', y='expenses')
+# linear trendline (OLS fit on the expenses series)
+exp_x = full_data['date'].map(pd.Timestamp.toordinal)
+trend_coeffs = np.polyfit(exp_x, full_data['expenses'], 1)
+fig3.add_trace(
+    go.Scatter(
+        x=full_data['date'],
+        y=np.polyval(trend_coeffs, exp_x),
+        mode='lines',
+        name='Trend',
+        line=dict(color='red', dash='dash')
+    )
+)
 fig3.update_layout(xaxis_title=None, yaxis_title='Amount (£)')
 st.plotly_chart(fig3)
 
@@ -96,3 +108,54 @@ full_data['monthly_returns'] = full_data['capital_gain'] / full_data['start_valu
 fig4 = px.bar(full_data, x='date', y='monthly_returns')
 fig4.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='Return %')
 st.plotly_chart(fig4)
+
+# --- CURRENT FISCAL YEAR SUMMARY ---
+
+st.title('Current Fiscal Year')
+
+today = pd.Timestamp.today()
+current_fy_start = pd.Timestamp(year=today.year, month=1, day=1)
+current_fy_end = pd.Timestamp(year=today.year + 1, month=1, day=1)
+
+current_fy_data = full_data[(full_data['date'] >= current_fy_start) & (full_data['date'] < current_fy_end)]
+
+if current_fy_data.empty:
+    st.info(f"No data available for {current_fy_start.strftime('%b %Y')} – {current_fy_end.strftime('%b %Y')}.")
+else:
+    current_fy_income_savings = current_fy_data['savings'].sum()
+    current_fy_capital_gain = current_fy_data['capital_gain'].sum()
+    current_fy_total_savings = current_fy_income_savings + current_fy_capital_gain
+
+    current_fy_twr = (1 + current_fy_data['monthly_returns'].fillna(0)).prod() - 1
+
+    st.subheader(f"{current_fy_start.strftime('%b %Y')} – {current_fy_end.strftime('%b %Y')}")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Savings", f"£{current_fy_total_savings:,.0f}")
+    col2.metric("From Income", f"£{current_fy_income_savings:,.0f}")
+    col3.metric("From Capital Gains", f"£{current_fy_capital_gain:,.0f}", f"{current_fy_twr:.1%} time-weighted return")
+
+# --- PREVIOUS FISCAL YEAR SUMMARY ---
+
+st.title('Previous Fiscal Year')
+
+fy_end = pd.Timestamp(year=today.year, month=1, day=1)
+fy_start = pd.Timestamp(year=today.year - 1, month=1, day=1)
+
+fy_data = full_data[(full_data['date'] >= fy_start) & (full_data['date'] < fy_end)]
+
+if fy_data.empty:
+    st.info(f"No data available for {fy_start.strftime('%b %Y')} – {fy_end.strftime('%b %Y')}.")
+else:
+    fy_income_savings = fy_data['savings'].sum()
+    fy_capital_gain = fy_data['capital_gain'].sum()
+    fy_total_savings = fy_income_savings + fy_capital_gain
+
+    fy_twr = (1 + fy_data['monthly_returns'].fillna(0)).prod() - 1
+
+    st.subheader(f"{fy_start.strftime('%b %Y')} – {fy_end.strftime('%b %Y')}")
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Savings", f"£{fy_total_savings:,.0f}")
+    col2.metric("From Income", f"£{fy_income_savings:,.0f}")
+    col3.metric("From Capital Gains", f"£{fy_capital_gain:,.0f}", f"{fy_twr:.1%} time-weighted return")

@@ -1,0 +1,66 @@
+import os
+from utils import *
+
+import pandas as pd
+import plotly
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+import numpy as np
+from datetime import datetime
+import datetime as dt
+import sqlite3
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+db_path = os.path.join(BASE_DIR, "dashboard_memory.db")
+conn = sqlite3.connect(db_path, check_same_thread=False)
+c = conn.cursor()
+
+# title
+st.title('Investments')
+
+# loading monthly logs
+
+monthly = c.execute("SELECT * FROM monthly_logs").fetchall()
+monthly_df = pd.DataFrame(monthly, columns=['date', 'account', 'inflows', 'outflows', 'end_value', 'unique_index'])
+monthly_df['date'] = pd.to_datetime(monthly_df['date'], format='%d/%m/%y')
+
+# calculate per-account capital gain and monthly return
+monthly_df = monthly_df.sort_values(['account', 'date'])
+monthly_df['start_value'] = monthly_df.groupby('account')['end_value'].shift().fillna(0)
+monthly_df['capital_gain'] = monthly_df['end_value'] - monthly_df['start_value'] - monthly_df['inflows'] + monthly_df['outflows']
+# zero out each account's first month — no prior start_value available, gain is not meaningful
+first_idx = monthly_df.groupby('account')['date'].idxmin()
+monthly_df.loc[first_idx, 'capital_gain'] = 0
+monthly_df['monthly_return'] = monthly_df['capital_gain'] / monthly_df['start_value'].replace(0, np.nan)
+
+# --- CHARTS ---
+
+st.subheader('Investment Value by Account')
+
+if monthly_df.empty:
+    st.info("No investment data recorded yet.")
+else:
+    pivot = monthly_df.pivot_table(index='date', columns='account', values='end_value', aggfunc='sum').fillna(0).sort_index()
+
+    fig = px.bar(pivot, x=pivot.index, y=pivot.columns)
+    fig.update_layout(barmode='stack', xaxis_title=None, yaxis_title='Value (£)', legend_title='Account')
+    st.plotly_chart(fig)
+
+    # capital gains by account
+    st.subheader('Capital Gains by Account')
+
+    gain_pivot = monthly_df.pivot_table(index='date', columns='account', values='capital_gain', aggfunc='sum').fillna(0).sort_index()
+
+    fig2 = px.bar(gain_pivot, x=gain_pivot.index, y=gain_pivot.columns)
+    fig2.update_layout(barmode='relative', xaxis_title=None, yaxis_title='Capital Gain (£)', legend_title='Account')
+    st.plotly_chart(fig2)
+
+    # capital gain % by account
+    st.subheader('Capital Gain % by Account')
+
+    return_pivot = monthly_df.pivot_table(index='date', columns='account', values='monthly_return', aggfunc='sum').sort_index()
+
+    fig3 = px.line(return_pivot, x=return_pivot.index, y=return_pivot.columns, markers=True)
+    fig3.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='Monthly Return %', legend_title='Account')
+    st.plotly_chart(fig3)
