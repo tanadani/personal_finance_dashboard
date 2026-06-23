@@ -32,11 +32,11 @@ average_monthly_return = (full_data['capital_gain'] / full_data['start_value']).
 col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
 with col1:
-    annual_increase = st.number_input("Annual salary increase %", value=3) / 100
+    annual_increase = st.number_input("Annual salary increase %", value=5) / 100
 with col2:
-    bonus_percentage = st.number_input("Annual bonus (% of pay)", value=0) / 100
+    bonus_percentage = st.number_input("Annual bonus (% of pay)", value=60) / 100
 with col3:
-    income_tax = st.number_input("Income Tax %", value=25) / 100
+    income_tax = st.number_input("Income Tax %", value=40) / 100
 with col4:
     monthly_return = st.number_input("Investment Returns %", value=5) / 12 / 100
 

@@ -43,6 +43,8 @@ _ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DATA_DIR = os.path.join(_ROOT_DIR, "data")
 _DB_PATH = os.path.join(_DATA_DIR, "dashboard.db")
 _SETTINGS_PATH = os.path.join(_DATA_DIR, "settings.json")
+_BACKUP_DIR = os.path.join(_DATA_DIR, "backups")
+_BACKUP_KEEP = 20
 
 
 def get_setting(key, default=None):
@@ -169,6 +171,46 @@ def render_controls():
             )
 
     return st.session_state["enable_ibkr"]
+
+
+def backup_db(conn, keep=_BACKUP_KEEP):
+    """Snapshot the database to data/backups/ before a mutation, keeping the last `keep`.
+
+    Unlike export_db_to_csv (which overwrites the same flat CSV mirrors on every
+    save), this keeps timestamped, point-in-time copies of the whole SQLite file,
+    so an accidental edit or delete can be recovered. Call it *before* applying a
+    mutation so the snapshot captures the last-known-good state.
+
+    Uses the SQLite online backup API rather than a file copy, so the snapshot is
+    transactionally consistent even if the source is mid-write. Failures are
+    surfaced as a Streamlit warning rather than silently swallowed.
+    """
+    os.makedirs(_BACKUP_DIR, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    dest_path = os.path.join(_BACKUP_DIR, f"dashboard_{stamp}.db")
+    try:
+        dest = sqlite3.connect(dest_path)
+        try:
+            conn.backup(dest)
+        finally:
+            dest.close()
+    except Exception as e:
+        # a missing backup must not block the user's save, but they should know
+        st.warning(f"Could not write a database backup before this change: {e}")
+        if os.path.exists(dest_path):
+            os.remove(dest_path)  # don't leave a truncated snapshot behind
+        return
+
+    # prune oldest snapshots beyond the retention limit (lexical sort == chronological)
+    snapshots = sorted(
+        f for f in os.listdir(_BACKUP_DIR)
+        if f.startswith("dashboard_") and f.endswith(".db")
+    )
+    for stale in snapshots[:-keep]:
+        try:
+            os.remove(os.path.join(_BACKUP_DIR, stale))
+        except OSError:
+            pass
 
 
 def export_db_to_csv(conn):

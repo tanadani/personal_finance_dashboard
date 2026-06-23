@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import datetime as dt
-from utils import get_db_connection, month_input, get_currency, export_db_to_csv
+from utils import get_db_connection, month_input, get_currency, export_db_to_csv, backup_db
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -44,6 +44,7 @@ if st.button("Save Income"):
     if existing > 0:
         st.warning(f"An income record for {date} already exists. Edit it in the section below instead.")
     else:
+        backup_db(conn)
         conn.execute("INSERT INTO salary_logs VALUES (?, ?, ?)", (date, income, 0))
         conn.commit()
         export_db_to_csv(conn)
@@ -77,6 +78,7 @@ if st.button("Save Positions"):
     if dup_count > 0 and not confirm_dup:
         st.warning("Check 'Add anyway' to save a duplicate, or edit the existing record below.")
     else:
+        backup_db(conn)
         conn.execute("INSERT INTO monthly_logs VALUES (?, ?, ?, ?, ?, ?)",
                      (date, account, inflows, outflows, end_value, 0))
         conn.commit()
@@ -124,6 +126,7 @@ if chosen_table == 'Monthly logs':
         deleted   = st.form_submit_button("Delete Record")
 
         if submitted:
+            backup_db(conn)
             c.execute("""
                 UPDATE monthly_logs
                 SET date = ?, platform = ?, inflows = ?, outflows = ?, end_value = ?
@@ -138,6 +141,7 @@ if chosen_table == 'Monthly logs':
             if not confirm_del:
                 st.warning("Check 'Confirm deletion' to delete this record.")
             else:
+                backup_db(conn)
                 c.execute("DELETE FROM monthly_logs WHERE rowid = ?", (int(record["rowid"]),))
                 conn.commit()
                 export_db_to_csv(conn)
@@ -164,6 +168,7 @@ else:
         deleted   = st.form_submit_button("Delete Record")
 
         if submitted:
+            backup_db(conn)
             c.execute("""
                 UPDATE salary_logs SET date = ?, income = ? WHERE rowid = ?
             """, (new_date.strftime("%d/%m/%y"), income, int(record["rowid"])))
@@ -176,6 +181,7 @@ else:
             if not confirm_del:
                 st.warning("Check 'Confirm deletion' to delete this record.")
             else:
+                backup_db(conn)
                 c.execute("DELETE FROM salary_logs WHERE rowid = ?", (int(record["rowid"]),))
                 conn.commit()
                 export_db_to_csv(conn)

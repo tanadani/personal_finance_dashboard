@@ -64,3 +64,43 @@ return_pivot = monthly_df.pivot_table(index='date', columns='account', values='m
 fig3 = px.line(return_pivot, x=return_pivot.index, y=return_pivot.columns, markers=True)
 fig3.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='Monthly Return %', legend_title='Account')
 st.plotly_chart(fig3)
+
+# --- TOTAL PORTFOLIO RISK & RETURN ---
+
+st.subheader('Total Portfolio — Risk & Return')
+
+total_df = monthly_df.groupby('date')[['inflows', 'outflows', 'end_value']].sum().sort_index()
+total_df['start_value'] = total_df['end_value'].shift().fillna(0)
+total_df['capital_gain'] = total_df['end_value'] - total_df['start_value'] - total_df['inflows'] + total_df['outflows']
+# zero out the first month — no prior start_value available, gain is not meaningful
+total_df.iloc[0, total_df.columns.get_loc('capital_gain')] = 0
+total_df['monthly_return'] = total_df['capital_gain'] / total_df['start_value'].replace(0, np.nan)
+
+n_months = len(total_df)
+
+if n_months < 2:
+    st.info("Need at least two months of combined data to compute portfolio-level risk and return.")
+else:
+    monthly_returns = total_df['monthly_return'].fillna(0)
+
+    # CAGR from the compounded monthly return series, annualized
+    wealth_index = (1 + monthly_returns).cumprod()
+    total_return = wealth_index.iloc[-1] - 1
+    cagr = (1 + total_return) ** (12 / n_months) - 1
+
+    # annualized volatility from the dispersion of monthly returns
+    volatility = monthly_returns.std(ddof=1) * np.sqrt(12)
+
+    # max drawdown from the compounded wealth index
+    drawdown = wealth_index / wealth_index.cummax() - 1
+    max_drawdown = drawdown.min()
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("CAGR", f"{cagr:.1%}")
+    col2.metric("Volatility (annualized)", f"{volatility:.1%}")
+    col3.metric("Max Drawdown", f"{max_drawdown:.1%}")
+
+    st.caption(
+        f"Based on {n_months} months of combined account data. Monthly-based volatility and "
+        "drawdown are a floor estimate — they miss intra-month swings that daily data would catch."
+    )

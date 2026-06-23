@@ -87,15 +87,14 @@ st.plotly_chart(fig2)
 
 st.subheader('Monthly Expenses')
 fig3 = px.bar(full_data, x='date', y='expenses')
-# linear trendline (OLS fit on the expenses series)
-exp_x = full_data['date'].map(pd.Timestamp.toordinal)
-trend_coeffs = np.polyfit(exp_x, full_data['expenses'], 1)
+# 5-month rolling average of expenses
+expenses_rolling = full_data['expenses'].rolling(5).mean()
 fig3.add_trace(
     go.Scatter(
         x=full_data['date'],
-        y=np.polyval(trend_coeffs, exp_x),
+        y=expenses_rolling,
         mode='lines',
-        name='Trend',
+        name='5-Month Rolling Avg',
         line=dict(color='red', dash='dash')
     )
 )
