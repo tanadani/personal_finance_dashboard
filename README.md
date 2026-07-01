@@ -37,8 +37,11 @@ pip install -r requirements.txt
 ## Running
 
 ```bash
-streamlit run app.py
+python3 -m streamlit run app.py
 ```
+
+(On macOS use `python3 -m streamlit ...` — the bare `streamlit` command is only
+on your PATH if you activated the virtual environment from Setup.)
 
 Open the URL it prints (default `http://localhost:8501`). Navigation is defined
 explicitly in `app.py` via `st.navigation`, which also renders the shared sidebar
@@ -57,6 +60,50 @@ controls (currency, randomize, and the IBKR feature toggle) on every page.
      per account per month.
 3. Visit **Analytics**, **Investments**, and **Projections** — they fill in
    automatically. Use **Travels** any time to log trips.
+
+## Getting updates
+
+Your data never lives in git (see **Data & privacy**), so updating the app never
+touches it:
+
+```bash
+git pull
+pip install -r requirements.txt   # only needed if dependencies changed
+```
+
+Then relaunch. If an update changes the database schema, the app migrates your
+database automatically on the next launch — taking a timestamped safety snapshot
+in `data/backups/` first.
+
+**If you originally got the app as a zip/download** (not a git clone), switch to
+a clone once and updates become one command forever:
+
+```bash
+git clone https://github.com/tanadani/personal_finance_dashboard.git
+```
+
+then copy your old `data/` folder into the new clone and delete the old copy.
+
+## Syncing between devices
+
+All of your state — database, settings, backups, IBKR exports — is the `data/`
+folder. Two ways to share it across machines:
+
+- **Automatic:** set the `FINANCE_DATA_DIR` environment variable to a
+  cloud-synced folder (iCloud Drive, Dropbox, …) before launching, e.g.:
+
+  ```bash
+  export FINANCE_DATA_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/finance-data"
+  python3 -m streamlit run app.py
+  ```
+
+  Add the `export` line to your `~/.zshrc` to make it permanent. **Run the app
+  on one device at a time** — SQLite files can be corrupted if two machines
+  write through a sync service simultaneously (the automatic backups in
+  `data/backups/` are your safety net if that ever happens).
+
+- **Manual:** copy the `data/` folder (or just `data/dashboard.db`) to the other
+  machine — it is a complete, self-contained transfer.
 
 ## How the numbers work
 

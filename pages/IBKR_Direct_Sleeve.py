@@ -7,9 +7,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import ibkr_analytics as ib
+from utils import DATA_DIR
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CSV = os.path.join(os.path.dirname(BASE_DIR), "data", "Daily_Positions_MTM.csv")
+DEFAULT_CSV = os.path.join(DATA_DIR, "Daily_Positions_MTM.csv")
 
 
 def _fmt_gbp(x):

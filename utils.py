@@ -39,11 +39,14 @@ def month_input(label, value=None, key=None):
 
 # Application root (where utils.py lives). The database and any generated CSV
 # exports live under data/, keeping all user data in one gitignored folder.
+# Set the FINANCE_DATA_DIR environment variable to relocate the data folder,
+# e.g. into a cloud-synced directory shared across devices (see README,
+# "Syncing between devices").
 _ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-_DATA_DIR = os.path.join(_ROOT_DIR, "data")
-_DB_PATH = os.path.join(_DATA_DIR, "dashboard.db")
-_SETTINGS_PATH = os.path.join(_DATA_DIR, "settings.json")
-_BACKUP_DIR = os.path.join(_DATA_DIR, "backups")
+DATA_DIR = os.environ.get("FINANCE_DATA_DIR") or os.path.join(_ROOT_DIR, "data")
+_DB_PATH = os.path.join(DATA_DIR, "dashboard.db")
+_SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+_BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 _BACKUP_KEEP = 20
 
 
@@ -62,7 +65,7 @@ def get_setting(key, default=None):
 
 def set_setting(key, value):
     """Persist a single setting to data/settings.json (creating it if needed)."""
-    os.makedirs(_DATA_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     data = {}
     try:
         with open(_SETTINGS_PATH) as f:
@@ -111,15 +114,55 @@ def init_db(conn):
     conn.commit()
 
 
+# ---------------------------------------------------------------------------
+# Schema versioning
+#
+# init_db's CREATE TABLE IF NOT EXISTS only handles brand-new databases; any
+# change to *existing* tables must be a numbered migration in _migrate_db so
+# that older databases in the wild (a friend's install, another device) upgrade
+# themselves on the first launch after a code update.
+#
+# To change the schema: bump _SCHEMA_VERSION, add an `if version < N:` block
+# at the marked spot in _migrate_db, and never edit or reorder earlier blocks —
+# any copy of the app may be starting from any past version.
+# ---------------------------------------------------------------------------
+_SCHEMA_VERSION = 1
+
+
+def _migrate_db(conn):
+    """Bring an existing database up to _SCHEMA_VERSION, snapshotting it first.
+
+    The database records its schema version in SQLite's built-in
+    PRAGMA user_version (0 for databases created before versioning existed).
+    Runs at most once per version bump — a no-op on every launch after that.
+    """
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= _SCHEMA_VERSION:
+        return
+
+    backup_db(conn)  # last-known-good snapshot before touching the schema
+
+    # v1: baseline schema (monthly_logs, salary_logs, trips_logs). Tables are
+    # created by init_db, so pre-versioning databases only need stamping.
+
+    # future migrations go here, e.g.:
+    # if version < 2:
+    #     conn.execute("ALTER TABLE monthly_logs ADD COLUMN note TEXT")
+
+    conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
+    conn.commit()
+
+
 def get_db_connection():
     """Open (creating if needed) the app database under data/ and ensure its schema.
 
     Every page calls this instead of resolving paths itself, so the database
     location is defined in exactly one place.
     """
-    os.makedirs(_DATA_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     conn = sqlite3.connect(_DB_PATH, check_same_thread=False)
     init_db(conn)
+    _migrate_db(conn)
     return conn
 
 
@@ -215,7 +258,7 @@ def backup_db(conn, keep=_BACKUP_KEEP):
 
 def export_db_to_csv(conn):
     """Export all database tables to CSV files under data/, overwriting previous exports."""
-    os.makedirs(_DATA_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     tables = {
         "monthly_logs": "monthly_logs_export.csv",
         "salary_logs":  "salary_logs_export.csv",
@@ -224,7 +267,7 @@ def export_db_to_csv(conn):
     for table, filename in tables.items():
         try:
             df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-            df.to_csv(os.path.join(_DATA_DIR, filename), index=False)
+            df.to_csv(os.path.join(DATA_DIR, filename), index=False)
         except Exception:
             pass  # table may not exist yet
 
