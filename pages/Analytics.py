@@ -60,6 +60,13 @@ st.plotly_chart(fig)
 
 # monthly savings and capital gain chart
 st.subheader('Monthly Savings and Returns')
+focus_view = st.toggle(
+    'Focus view (clip outlier months)',
+    help="Caps the y-axis so smaller months are readable. Bars that get "
+         "clipped are labeled with their real value.",
+    key='monthly_savings_focus'
+)
+
 fig2 = px.bar(
     full_data,
     x='date',
@@ -81,6 +88,27 @@ fig2.add_trace(
     )
 )
 fig2.update_layout(xaxis_title=None, yaxis_title=None)
+
+if focus_view:
+    pos_stack = full_data[['capital_gain', 'savings']].clip(lower=0).sum(axis=1)
+    neg_stack = full_data[['capital_gain', 'savings']].clip(upper=0).sum(axis=1)
+
+    # base the clip range on the 5th-95th percentile of typical months so a
+    # handful of bonus/first-month spikes don't stretch the axis
+    y_low, y_high = np.percentile(pd.concat([pos_stack, neg_stack]), [10, 90])
+    y_low, y_high = min(y_low, 0), max(y_high, 0)
+    pad = (y_high - y_low) * 0.15 or 1
+    y_min, y_max = y_low - pad, y_high + pad
+    fig2.update_layout(yaxis=dict(range=[y_min, y_max]))
+
+    for date, top, bottom in zip(full_data['date'], pos_stack, neg_stack):
+        if top > y_max:
+            fig2.add_annotation(x=date, y=y_max, yshift=12, text=f"{CUR}{top:,.0f}",
+                                 showarrow=False, font=dict(size=10))
+        if bottom < y_min:
+            fig2.add_annotation(x=date, y=y_min, yshift=-12, text=f"{CUR}{bottom:,.0f}",
+                                 showarrow=False, font=dict(size=10))
+
 st.plotly_chart(fig2)
 
 # monthly expenses
