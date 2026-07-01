@@ -34,7 +34,8 @@ if st.session_state.randomize:
 
 accounts = all_data_df.platform.unique().tolist()
 
-record_date = month_input("Record Date", key="insert")
+previous_month = (dt.date.today().replace(day=1) - dt.timedelta(days=1)).replace(day=1)
+record_date = month_input("Record Date", value=previous_month, key="insert")
 date = record_date.strftime('%d/%m/%y')
 
 income = st.number_input("Income", min_value=0)
@@ -115,7 +116,7 @@ if chosen_table == 'Monthly logs':
     record = all_data_df[all_data_df['label'] == selected_label].iloc[0]
 
     with st.form("Edit Monthly"):
-        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key="edit_monthly")
+        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key=f"edit_monthly_{int(record['rowid'])}")
         account     = st.text_input("Platform", value=record["platform"])
         inflows     = st.number_input("Inflows", value=int(record["inflows"]))
         outflows    = st.number_input("Outflows", value=int(record["outflows"]))
@@ -129,7 +130,7 @@ if chosen_table == 'Monthly logs':
             backup_db(conn)
             c.execute("""
                 UPDATE monthly_logs
-                SET date = ?, platform = ?, inflows = ?, outflows = ?, end_value = ?
+                SET date = ?, account = ?, inflows = ?, outflows = ?, end_value = ?
                 WHERE rowid = ?
             """, (new_date.strftime("%d/%m/%y"), account, inflows, outflows, end_value, int(record["rowid"])))
             conn.commit()
@@ -160,7 +161,7 @@ else:
     record = salary_data[salary_data['label'] == selected_label].iloc[0]
 
     with st.form("Edit Income"):
-        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key="edit_income")
+        new_date    = month_input("Record Date", value=dt.datetime.strptime(record["date"], "%d/%m/%y").date(), key=f"edit_income_{int(record['rowid'])}")
         income      = st.number_input("Income", value=int(record["income"]))
         confirm_del = st.checkbox("Confirm deletion")
 

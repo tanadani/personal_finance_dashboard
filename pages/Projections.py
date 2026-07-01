@@ -108,7 +108,11 @@ st.plotly_chart(fig)
 
 # writing only fixed variable
 
-st.write('Assuming current net base salary savings rate: ' + str(int(saving_rate * 100)) + '%')
+savings_rate_months = min(12, len(full_data))
+st.write(
+    f'Assuming current net base salary savings rate: {int(saving_rate * 100)}% '
+    f'(based on the last {savings_rate_months} months)'
+)
 
 # writing estimate retirement goal based on current expenses and fixed income return
 

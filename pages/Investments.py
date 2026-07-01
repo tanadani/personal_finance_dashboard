@@ -95,10 +95,15 @@ else:
     drawdown = wealth_index / wealth_index.cummax() - 1
     max_drawdown = drawdown.min()
 
-    col1, col2, col3 = st.columns(3)
+    # Sharpe ratio vs a 4.5% risk-free rate, same benchmark used on the IBKR sleeve page
+    risk_free_rate = 0.045
+    sharpe = (cagr - risk_free_rate) / volatility if volatility > 0 else np.nan
+
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("CAGR", f"{cagr:.1%}")
     col2.metric("Volatility (annualized)", f"{volatility:.1%}")
     col3.metric("Max Drawdown", f"{max_drawdown:.1%}")
+    col4.metric("Sharpe (rf 4.5%)", f"{sharpe:.2f}" if not np.isnan(sharpe) else "n/a")
 
     st.caption(
         f"Based on {n_months} months of combined account data. Monthly-based volatility and "
