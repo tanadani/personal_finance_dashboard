@@ -22,8 +22,8 @@ import streamlit as st
 # Archived exports accumulate here so the analysed history grows past IBKR's
 # 1-year export cap. Filenames are the content hash, so re-adding the same export
 # is a no-op and overlapping exports dedupe cleanly.
-_MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
-ARCHIVE_DIR = os.path.join(_MODULE_DIR, "data", "ibkr_exports")
+from utils import DATA_DIR
+ARCHIVE_DIR = os.path.join(DATA_DIR, "ibkr_exports")
 
 
 # --- section header signatures (matched on the leading columns) ---
