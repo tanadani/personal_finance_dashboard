@@ -17,6 +17,7 @@ pages = [
     st.Page("pages/Analytics.py",   title="Analytics"),
     st.Page("pages/Investments.py", title="Investments"),
     st.Page("pages/Projections.py", title="Projections"),
+    st.Page("pages/Pension.py",     title="Pension"),
     st.Page("pages/Travels.py",     title="Travels"),
 ]
 

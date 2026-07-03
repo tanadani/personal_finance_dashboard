@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
-from utils import get_db_connection, get_currency
+from utils import get_db_connection, get_currency, DATE_FORMAT, apply_monthly_xaxis
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -21,7 +21,7 @@ if monthly_df.empty:
     st.info("No investment data recorded yet. Add monthly positions on the **Data Insert** page.")
     st.stop()
 
-monthly_df['date'] = pd.to_datetime(monthly_df['date'], format='%d/%m/%y')
+monthly_df['date'] = pd.to_datetime(monthly_df['date'], format=DATE_FORMAT)
 
 # collapse duplicate (account, date) rows — e.g. merged sub-accounts that both
 # reported in the same month — before computing month-over-month changes
@@ -45,6 +45,7 @@ pivot = monthly_df.pivot_table(index='date', columns='account', values='end_valu
 
 fig = px.bar(pivot, x=pivot.index, y=pivot.columns)
 fig.update_layout(barmode='stack', xaxis_title=None, yaxis_title=f'Value ({CUR})', legend_title='Account')
+apply_monthly_xaxis(fig, len(pivot))
 st.plotly_chart(fig)
 
 # capital gains by account
@@ -54,6 +55,7 @@ gain_pivot = monthly_df.pivot_table(index='date', columns='account', values='cap
 
 fig2 = px.bar(gain_pivot, x=gain_pivot.index, y=gain_pivot.columns)
 fig2.update_layout(barmode='relative', xaxis_title=None, yaxis_title=f'Capital Gain ({CUR})', legend_title='Account')
+apply_monthly_xaxis(fig2, len(gain_pivot))
 st.plotly_chart(fig2)
 
 # capital gain % by account
@@ -63,6 +65,7 @@ return_pivot = monthly_df.pivot_table(index='date', columns='account', values='m
 
 fig3 = px.line(return_pivot, x=return_pivot.index, y=return_pivot.columns, markers=True)
 fig3.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='Monthly Return %', legend_title='Account')
+apply_monthly_xaxis(fig3, len(return_pivot))
 st.plotly_chart(fig3)
 
 # --- TOTAL PORTFOLIO RISK & RETURN ---

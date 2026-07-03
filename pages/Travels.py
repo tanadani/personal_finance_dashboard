@@ -2,7 +2,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 import datetime as dt
-from utils import get_db_connection, generate_trip_data, export_db_to_csv, get_currency
+from utils import get_db_connection, generate_trip_data, export_db_to_csv, get_currency, backup_db, DATE_FORMAT
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -66,8 +66,7 @@ destinations = trips['place'].unique().tolist() if not trips.empty else []
 
 col1, col2 = st.columns([1, 1])
 with col1:
-    raw_date = str(st.date_input("Trip Date"))
-    date = dt.datetime.strptime(raw_date, "%Y-%m-%d").strftime("%d/%m/%y")
+    date = st.date_input("Trip Date").strftime(DATE_FORMAT)
 with col2:
     place = st.selectbox("Destination", destinations, accept_new_options=True)
 
@@ -82,6 +81,7 @@ with col6:
     life = st.number_input(f"Living {CUR}", min_value=0)
 
 if st.button("Save Trip"):
+    backup_db(conn)
     conn.execute(
         "INSERT INTO trips_logs VALUES (?, ?, ?, ?, ?, ?, ?)",
         (place, int(days), int(flights), int(house), int(life), date, 0),
@@ -121,12 +121,13 @@ else:
         deleted   = st.form_submit_button("Delete Record")
 
         if submitted:
+            backup_db(conn)
             c.execute("""
                 UPDATE trips_logs
                 SET place = ?, days = ?, flights = ?, home = ?, life = ?, date = ?
                 WHERE rowid = ?
             """, (place, int(days), int(flights), int(house), int(life),
-                  new_date.strftime("%d/%m/%y"), int(record["rowid"])))
+                  new_date.strftime(DATE_FORMAT), int(record["rowid"])))
             conn.commit()
             export_db_to_csv(conn)
             st.session_state['travels_msg'] = "Trip updated successfully!"
@@ -136,6 +137,7 @@ else:
             if not confirm_del:
                 st.warning("Check 'Confirm deletion' to delete this record.")
             else:
+                backup_db(conn)
                 c.execute("DELETE FROM trips_logs WHERE rowid = ?", (int(record["rowid"]),))
                 conn.commit()
                 export_db_to_csv(conn)
