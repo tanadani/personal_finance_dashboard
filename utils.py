@@ -12,6 +12,12 @@ import datetime as dt
 _MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
                 "July", "August", "September", "October", "November", "December"]
 
+# All 'date' columns store the 1st of a month as ISO text (YYYY-MM-DD) — the
+# only format SQLite's MIN/MAX/ORDER BY sort correctly as plain strings, and
+# unambiguous unlike a two-digit year. Every page reads/writes dates through
+# this constant so the whole app stays on one format.
+DATE_FORMAT = "%Y-%m-%d"
+
 
 def month_input(label, value=None, key=None):
     """Render a month/year picker and return the 1st of the selected month.
@@ -111,6 +117,20 @@ def init_db(conn):
             unique_index INTEGER
         )
     """)
+    # Private pensions live in their own table because the money is locked
+    # (illiquid until access age) and must never be summed into spendable
+    # net-worth / runway figures. Snapshots are sporadic — one row each time
+    # the user logs into a provider — so `value` is the pot value on `date`
+    # and `contribution` is the gross monthly amount going in at that time.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS pension_logs (
+            date         TEXT,
+            provider     TEXT,
+            contribution INTEGER,
+            value        INTEGER,
+            unique_index INTEGER
+        )
+    """)
     conn.commit()
 
 
@@ -126,7 +146,7 @@ def init_db(conn):
 # at the marked spot in _migrate_db, and never edit or reorder earlier blocks —
 # any copy of the app may be starting from any past version.
 # ---------------------------------------------------------------------------
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 def _migrate_db(conn):
@@ -145,9 +165,16 @@ def _migrate_db(conn):
     # v1: baseline schema (monthly_logs, salary_logs, trips_logs). Tables are
     # created by init_db, so pre-versioning databases only need stamping.
 
-    # future migrations go here, e.g.:
-    # if version < 2:
-    #     conn.execute("ALTER TABLE monthly_logs ADD COLUMN note TEXT")
+    if version < 2:
+        # dates were stored as 'dd/mm/yy' text, which sorts and compares
+        # wrong at the SQL level (lexical, not chronological) and carries an
+        # ambiguous two-digit year. Rewrite every date column to ISO
+        # (DATE_FORMAT) — the only text format SQLite orders correctly.
+        for table in ("monthly_logs", "salary_logs", "trips_logs", "pension_logs"):
+            rows = conn.execute(f"SELECT rowid, date FROM {table}").fetchall()
+            for rowid, old_date in rows:
+                new_date = dt.datetime.strptime(old_date, "%d/%m/%y").strftime(DATE_FORMAT)
+                conn.execute(f"UPDATE {table} SET date = ? WHERE rowid = ?", (new_date, rowid))
 
     conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
     conn.commit()
@@ -263,6 +290,7 @@ def export_db_to_csv(conn):
         "monthly_logs": "monthly_logs_export.csv",
         "salary_logs":  "salary_logs_export.csv",
         "trips_logs":   "trips_logs_export.csv",
+        "pension_logs": "pension_logs_export.csv",
     }
     for table, filename in tables.items():
         try:
@@ -302,8 +330,8 @@ def generate_full_log(c, randomized=False):
     if monthly_df.empty or income_df.empty:
         return pd.DataFrame(columns=_FULL_LOG_COLUMNS)
 
-    monthly_df['date'] = pd.to_datetime(monthly_df['date'], format='%d/%m/%y')
-    income_df['date'] = pd.to_datetime(income_df['date'], format='%d/%m/%y')
+    monthly_df['date'] = pd.to_datetime(monthly_df['date'], format=DATE_FORMAT)
+    income_df['date'] = pd.to_datetime(income_df['date'], format=DATE_FORMAT)
     income_df.set_index('date', inplace=True)
 
     # creating a monthly dataframe
@@ -320,7 +348,10 @@ def generate_full_log(c, randomized=False):
     full_data = income_df.merge(total_df, left_index=True, right_index=True, how='outer')
     full_data['expenses'] = full_data['income'] - full_data['inflows'] + full_data['outflows']
     full_data['savings'] = full_data['income'] - full_data['expenses']
-    # zero out first month — no prior start_value available, gain is not meaningful
+    # first month: no prior start_value, so gain/expenses aren't meaningful and
+    # are zeroed — but savings is kept (= net inflows), because it carries the
+    # opening balances into the cumulative series. Monthly charts that would be
+    # distorted by that opening amount exclude the first month at render time.
     full_data.loc[total_df.index[0], 'expenses'] = 0
     full_data.loc[total_df.index[0], 'capital_gain'] = 0
     full_data['total_income'] = full_data['savings'] + full_data['capital_gain']
@@ -341,13 +372,116 @@ def generate_full_log(c, randomized=False):
     return full_data
 
 
+def simulate_paths(start_value, contributions, expected_return, volatility, n_sims, seed=None):
+    """Monte Carlo of an investment pot under geometric Brownian motion.
+
+    Evolves `n_sims` parallel paths one month at a time:
+
+        assets = assets * growth + contributions[t]
+
+    where `growth` is a log-normal factor calibrated so the expected simple
+    monthly return equals expected_return / 12. Only the market return is
+    random — any deterministic cash flow (savings, salary growth, a fixed
+    pension contribution) must already be baked into `contributions`, a
+    per-month array whose length sets the number of months simulated.
+
+    Shared by the liquid Projections page and the Pension page so both use
+    identical return maths. Returns an (n_months, n_sims) array of asset
+    values after each month.
+    """
+    contributions = np.asarray(contributions, dtype=float)
+    months = len(contributions)
+    mm = expected_return / 12                 # monthly expected simple return
+    ms = volatility / np.sqrt(12)             # monthly volatility
+    # drift chosen so E[growth] = 1 + mm (log-normal mean correction)
+    drift = np.log1p(mm) - 0.5 * ms ** 2
+
+    rng = np.random.default_rng(seed)
+    assets = np.full(int(n_sims), float(start_value))
+    history = np.empty((months, int(n_sims)))
+    for t in range(months):
+        growth = np.exp(drift + ms * rng.standard_normal(assets.shape))
+        assets = assets * growth + contributions[t]
+        history[t] = assets
+    return history
+
+
+def generate_pension_log(c, randomized=False):
+    """Load pension snapshots as a cleaned, provider-sorted dataframe.
+
+    Returns an empty frame (no columns guaranteed) when nothing is logged yet,
+    so callers guard on `.empty`. `rowid` is included for edit/delete.
+    """
+    rows = c.execute(
+        "SELECT rowid, date, provider, contribution, value FROM pension_logs"
+    ).fetchall()
+    df = pd.DataFrame(rows, columns=['rowid', 'date', 'provider', 'contribution', 'value'])
+    if df.empty:
+        return df
+
+    df['date'] = pd.to_datetime(df['date'], format=DATE_FORMAT)
+    if randomized:
+        df[['contribution', 'value']] = randomize(df[['contribution', 'value']])
+    df = df.sort_values(['provider', 'date']).reset_index(drop=True)
+    return df
+
+
+def generate_net_worth(c, full_data, randomized=False):
+    """Monthly net worth series: liquid accounts plus locked pension pots.
+
+    Stage-1 scope — no illiquid assets or liabilities yet. Both inputs are
+    sporadic relative to each other, so the series runs on the union of their
+    dates with each side's last known value carried forward — e.g. a pension
+    snapshot newer than the last position month still counts, on top of the
+    latest logged liquid value. Dates before the first position month are
+    dropped (no liquid baseline to carry forward).
+
+    Takes the already-computed full_data (from generate_full_log) rather than
+    recomputing it, so its data-quality warnings aren't emitted twice.
+    """
+    if full_data.empty:
+        return pd.DataFrame(columns=['date', 'liquid', 'pension', 'net_worth'])
+
+    liquid = full_data['end_value']
+
+    pension = pd.Series(0.0, index=liquid.index)
+    pensions = generate_pension_log(c, randomized=randomized)
+    if not pensions.empty:
+        pivot = pensions.pivot_table(index='date', columns='provider',
+                                     values='value', aggfunc='last').sort_index()
+        idx = liquid.index.union(pivot.index)
+        liquid = liquid.reindex(idx).ffill()
+        pension = pivot.reindex(idx).ffill().fillna(0).sum(axis=1)
+        keep = liquid.notna()
+        liquid, pension = liquid[keep], pension[keep]
+
+    nw = pd.DataFrame({'date': liquid.index,
+                       'liquid': liquid.values,
+                       'pension': pension.values})
+    nw['net_worth'] = nw['liquid'] + nw['pension']
+    return nw
+
+
 def generate_trip_data(c):
     trips = c.execute("SELECT rowid, * FROM trips_logs").fetchall()
     trips_df = pd.DataFrame(trips, columns=['rowid', 'place', 'days', 'flights', 'house', 'life', 'date', 'unique_index'])
-    trips_df['date'] = pd.to_datetime(trips_df['date'], format='%d/%m/%y')
+    trips_df['date'] = pd.to_datetime(trips_df['date'], format=DATE_FORMAT)
     trips_df['total'] = trips_df['flights'] + trips_df['house'] + trips_df['life']
     trips_df['daily'] = trips_df['total'] / trips_df['days']
     trips_df['unique_trip'] = trips_df['place'] + ' ' + trips_df['date'].dt.strftime('%b %Y')
     trips_df['label'] = trips_df['place'] + ' — ' + trips_df['date'].dt.strftime('%b %Y')
     trips_df.sort_values('date', ascending=True, inplace=True)
     return trips_df
+
+
+def apply_monthly_xaxis(fig, n_points, max_ticks=36):
+    """Label every month on a date x-axis, when there's room to fit them.
+
+    Plotly's default tick spacing skips months even when a chart has plenty of
+    horizontal room, which is the common case here (a year or two of monthly
+    data). Forcing one tick per month only helps up to a point, though — on a
+    multi-decade projection the labels would overlap into noise regardless of
+    chart width, so those are left on Plotly's own (readable) spacing.
+    """
+    if n_points <= max_ticks:
+        fig.update_xaxes(dtick="M1", tickformat="%b %Y", tickangle=-45)

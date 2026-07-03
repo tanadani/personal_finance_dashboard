@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 import datetime as dt
-from utils import get_db_connection, get_currency, generate_full_log
+from utils import get_db_connection, get_currency, generate_full_log, simulate_paths, apply_monthly_xaxis
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -25,9 +25,30 @@ if full_data.empty:
     st.info("No data yet. Add monthly positions and income on the **Data Insert** page to build a projection.")
     st.stop()
 
-# prompting all the variable inputs
+# ---------------------------------------------------------------------------
+# Estimate investment volatility from the user's own history.
+#
+# A straight-line return hides that markets swing. We model the investment
+# return each month as a random draw (geometric Brownian motion), so the
+# projection becomes a *distribution* of outcomes rather than a single line.
+# Volatility defaults to the user's realised monthly returns annualised
+# (std x sqrt(12)); the expected return defaults to a long-run equity
+# assumption (8%) rather than the user's short, likely-rosy realised mean.
+# ---------------------------------------------------------------------------
+N_SIMS = 3000  # fixed: enough paths for smooth percentile bands, still instant
 
-average_monthly_return = (full_data['capital_gain'] / full_data['start_value']).median()
+monthly_returns = (full_data['capital_gain'] / full_data['start_value'].replace(0, np.nan)).dropna()
+n_obs = len(monthly_returns)
+
+if n_obs >= 2:
+    measured_sigma = monthly_returns.std() * np.sqrt(12) * 100  # annualised volatility %
+else:
+    measured_sigma = 15.0  # generic equity volatility with too little history
+
+EQUITY_RETURN = 8  # long-run historic equities return %, used as the return default
+default_sigma = round(measured_sigma)
+
+# prompting all the variable inputs
 
 col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
@@ -38,72 +59,112 @@ with col2:
 with col3:
     income_tax = st.number_input("Income Tax %", value=40) / 100
 with col4:
-    monthly_return = st.number_input("Investment Returns %", value=5) / 12 / 100
+    expected_return = st.number_input(
+        "Expected Investment Return %", value=EQUITY_RETURN,
+        help="Defaults to the long-run historic return of equities (~8%). "
+             "Lower it for a bond-heavier, more conservative plan."
+    ) / 100
+
+col5, col6 = st.columns([1, 1])
+
+with col5:
+    volatility = st.number_input(
+        "Investment Volatility %", value=int(default_sigma), min_value=0,
+        help="Annual standard deviation of returns. Higher = wider range of outcomes. "
+             "Defaults to your own realised volatility. Equities are ~15-18%, "
+             "a 60/40 portfolio ~10-12%."
+    ) / 100
+with col6:
+    years = st.slider('Years', value=10, min_value=1, max_value=30, step=1)
+
+n_sims = N_SIMS
+months = years * 12
+
+# surface how the defaults were derived so the user can trust / override them
+sample_note = (
+    f"Return defaults to the long-run equity assumption (8%); volatility defaults "
+    f"to your realised ≈ {measured_sigma:.0f}% from the last {n_obs} months."
+    if n_obs >= 2 else
+    "Not enough return history yet — using generic 8% return / 15% volatility defaults."
+)
+st.caption(sample_note)
 
 # The recorded income is treated as take-home, so salary growth applies directly
 # to it without any assumed starting tax bracket.
 starting_tax_rate = income_tax
 
-# generate number of months in scope and list of dates
-
-months = st.slider('Years', value=10, min_value=1, max_value=30, step=1) * 12
-
 start_date = (pd.Timestamp.today().replace(day=1) + dt.timedelta(days=32)).replace(day=1)
 
-dates = pd.date_range(
-    start=start_date,
-    periods=months,
-    freq="MS")
+dates = pd.date_range(start=start_date, periods=months, freq="MS")
 
 # starting variables
 
 start_income = full_data['income'].iloc[-3:].median()
 gross_income = start_income / (1 - starting_tax_rate)
 income = gross_income * (1 - income_tax)
-total_assets = full_data['end_value'].iloc[-1]
+total_assets = float(full_data['end_value'].iloc[-1])
 saving_rate = (1 - full_data['expenses'].iloc[-12:].median() / full_data['income'].iloc[-12:].median())
-bonus = 0
 
-# creating dataframe
-projection = pd.DataFrame({"date": dates})
-projection["income"] = income
-projection["total_assets"] = total_assets
-projection["returns"] = full_data['capital_gain'].iloc[-1]
-projection["bonus"] = bonus
+# ---------------------------------------------------------------------------
+# Monte Carlo engine
+#
+# Income, savings and bonus are deterministic (not market-driven), so we first
+# build the per-month contribution schedule, then hand it to the shared
+# simulate_paths engine (utils) which randomises only the market return.
+# ---------------------------------------------------------------------------
+inc = income
+income_path, savings_path, bonus_path, contrib_path = [], [], [], []
 
-# generating projection
-
-for i in range(len(projection)):
-
-    current_date = projection.loc[i, "date"]
+for i in range(months):
+    current_date = dates[i]
 
     # Increase income and apply bonus every February
     if current_date.month == 2 and i != 0:
-        bonus = income * 12 * bonus_percentage
-        income *= (1 + annual_increase)
-
+        bonus = inc * 12 * bonus_percentage
+        inc *= (1 + annual_increase)
     else:
         bonus = 0
 
-    # Returns based on previous total assets
-    returns = int(total_assets * monthly_return)
+    savings = inc * saving_rate
 
-    # Update total assets
-    savings = int(income * saving_rate)
-    total_assets = int(total_assets + savings + returns + bonus)
+    income_path.append(int(inc))
+    savings_path.append(int(savings))
+    bonus_path.append(int(bonus))
+    contrib_path.append(savings + bonus)
 
-    # Store values
-    projection.loc[i, "income"] = int(income)
-    projection.loc[i, "bonus"] = int(bonus)
-    projection.loc[i, "returns"] = int(returns)
-    projection.loc[i, "total_assets"] = int(total_assets)
+# (n_months, n_sims) matrix of asset values; kept in full so we can later pull
+# out one real simulated trajectory (see "representative path" below) rather
+# than reconstructing a fake one from cross-sectional percentiles
+assets_history = simulate_paths(total_assets, contrib_path, expected_return, volatility, n_sims)
 
+p10, p25, p50, p75, p90 = (list(np.percentile(assets_history, q, axis=1))
+                           for q in (10, 25, 50, 75, 90))
 
-# plotting results
+projection = pd.DataFrame({
+    "date": dates,
+    "income": income_path,
+    "savings": savings_path,
+    "bonus": bonus_path,
+    "p10": p10, "p25": p25, "p50": p50, "p75": p75, "p90": p90,
+})
 
-fig = px.line(projection, x='date', y='total_assets')
-fig.update_traces(name='Total Assets')
-fig.update_layout(xaxis_title=None, yaxis_title=f'Total Assets ({CUR})')
+# plotting the fan chart: shaded 10-90 and 25-75 bands around the median
+
+BLUE = "#2a78d6"
+fig = go.Figure()
+# 10-90 band (lightest): invisible lower bound, then upper bound fills down to it
+fig.add_trace(go.Scatter(x=dates, y=p10, line=dict(width=0), showlegend=False, hoverinfo='skip'))
+fig.add_trace(go.Scatter(x=dates, y=p90, fill='tonexty', fillcolor='rgba(42,120,214,0.12)',
+                         line=dict(width=0), name='10th–90th'))
+# 25-75 band (darker)
+fig.add_trace(go.Scatter(x=dates, y=p25, line=dict(width=0), showlegend=False, hoverinfo='skip'))
+fig.add_trace(go.Scatter(x=dates, y=p75, fill='tonexty', fillcolor='rgba(42,120,214,0.30)',
+                         line=dict(width=0), name='25th–75th'))
+# median line
+fig.add_trace(go.Scatter(x=dates, y=p50, line=dict(color=BLUE, width=2.5), name='Median'))
+fig.update_layout(xaxis_title=None, yaxis_title=f'Total Assets ({CUR})',
+                  hovermode='x unified', legend_title=None)
+apply_monthly_xaxis(fig, len(dates))
 st.plotly_chart(fig)
 
 # writing only fixed variable
@@ -114,45 +175,101 @@ st.write(
     f'(based on the last {savings_rate_months} months)'
 )
 
+median_terminal = int(p50[-1])
+low_terminal = int(p10[-1])
+high_terminal = int(p90[-1])
+
+colA, colB, colC = st.columns(3)
+colA.metric(f"Median in {years}y", f"{CUR}{median_terminal:,}")
+colB.metric(f"Downside (10th pct)", f"{CUR}{low_terminal:,}",
+            f"{(low_terminal / median_terminal - 1) * 100:.0f}% vs median")
+colC.metric(f"Upside (90th pct)", f"{CUR}{high_terminal:,}",
+            f"+{(high_terminal / median_terminal - 1) * 100:.0f}% vs median")
+
 # writing estimate retirement goal based on current expenses and fixed income return
 
 st.subheader('Retirement Estimation')
 
 fixed_income_return = st.number_input('Fixed Income Return %', value=5) / 100
 
-current_expenses = int(full_data['expenses'].iloc[-12:].mean())
-projection['risk_free_return'] = projection['total_assets'] * fixed_income_return / 12 * (1 - income_tax)
+expenses_window = full_data.iloc[-12:]
+current_expenses = int(expenses_window['expenses'].mean())
+expenses_range = f"based on past {len(expenses_window)} months"
 
-goal_reached = projection[projection['risk_free_return'] >= current_expenses]
 
-if goal_reached.empty:
-    st.write(
-        f'At the current projection, your fixed income return does not reach '
-        f'monthly expenses of {CUR}{current_expenses:,} within the {months // 12}-year window. '
-        f'Try extending the horizon or increasing the investment return rate.'
-    )
-else:
-    asset_needed = int(goal_reached.iloc[0]['total_assets'])
-    years_missing = int((goal_reached.iloc[0]['date'] - dt.datetime.today()).days / 365)
-    st.write(
-        f'To maintain the current monthly life expenses of {CUR}{current_expenses:,} '
-        f'you can stop working in {years_missing} years with {CUR}{asset_needed:,} of assets '
-        f'invested at fixed income rate of {round(fixed_income_return * 100, 1)}%'
-    )
+def years_to_goal(asset_series):
+    """First calendar year at which fixed-income yield on assets covers monthly expenses."""
+    yields = np.array(asset_series) * fixed_income_return / 12 * (1 - income_tax)
+    hit = np.where(yields >= current_expenses)[0]
+    if len(hit) == 0:
+        return None
+    idx = int(hit[0])
+    return max(0, int((dates[idx] - pd.Timestamp.today()).days / 365)), int(asset_series[idx])
 
-total_assets_last = int(full_data['end_value'].iloc[-1])
+
 st.write(
-    f'With current assets of {CUR}{total_assets_last:,} and monthly expenses of {CUR}{current_expenses:,} '
-    f'you could live {round(total_assets_last / (current_expenses * 12), 1)} years without working before running out of assets.'
+    f'To cover current average monthly expenses of {CUR}{current_expenses:,} ({expenses_range}) '
+    f'from a fixed income return of {round(fixed_income_return * 100, 1)}%, here is when you reach that in each scenario:'
 )
 
-# showing cleaned data
+for label, series in [("Median (50th percentile)", p50),
+                      ("Downside (10th percentile)", p10),
+                      ("Upside (90th percentile)", p90)]:
+    result = years_to_goal(series)
+    if result is None:
+        st.write(
+            f'• **{label}:** not reached within the {years}-year window — '
+            f'extend the horizon or raise the return/savings rate.'
+        )
+    else:
+        yrs, asset_needed = result
+        st.write(
+            f'• **{label}:** in {yrs} years with {CUR}{asset_needed:,} of assets invested.'
+        )
 
-projection['savings'] = (projection['income'] * saving_rate).astype(int)
+total_assets_last = int(full_data['end_value'].iloc[-1])
+runway_years = round(total_assets_last / (current_expenses * 12), 1)
+
+st.divider()
+with st.container(border=True):
+    col_a, col_b = st.columns([1, 2])
+    with col_a:
+        st.metric("Runway if you stopped today", f"{runway_years} years")
+    with col_b:
+        st.markdown(
+            f"With current assets of **{CUR}{total_assets_last:,}** and average monthly expenses "
+            f"of **{CUR}{current_expenses:,}** ({expenses_range}), you could cover your "
+            f"spending for **{runway_years} years** without any income before running out — "
+            f"assuming assets are simply drawn down, earning no return."
+        )
+
+# showing cleaned data for one representative simulated path
+#
+# The percentile bands (p10-p90) are computed independently at each month —
+# each is "the 50th percentile across paths at month t", not a single
+# trajectory. Differencing that series month-to-month doesn't recover a real
+# path's returns: cross-sectional medians march upward almost monotonically
+# purely because contributions are added every month, even though every
+# individual simulated path has plenty of down months. So we instead pick one
+# actual simulated path — the one whose ending assets land closest to the
+# median outcome — and show its real (and sometimes negative) monthly returns.
+
+rep_idx = int(np.argmin(np.abs(assets_history[-1] - p50[-1])))
+rep_path = assets_history[:, rep_idx]
+rep_prev = np.concatenate([[total_assets], rep_path[:-1]])
+rep_returns = (rep_path - rep_prev - np.array(contrib_path)).astype(int)
+
 clean_projection = projection.copy()
+clean_projection['returns'] = rep_returns
+clean_projection['total_assets'] = rep_path.astype(int)
 clean_projection.index = clean_projection.date.dt.date
 clean_projection = clean_projection[['income', 'bonus', 'savings', 'returns', 'total_assets']]
 clean_projection.columns = ['Income', 'Bonus', 'Savings', 'Returns', 'Total Assets']
 
-if st.toggle('Show Detailed Monthly Projection'):
+if st.toggle('Show Detailed Monthly Projection (one simulated path near the median outcome)'):
+    st.caption(
+        "A single simulated trajectory whose ending assets land near the median "
+        "across all runs — shown so monthly returns include realistic down months, "
+        "unlike the smoothed percentile bands in the chart above."
+    )
     st.write(clean_projection)
