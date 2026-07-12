@@ -68,10 +68,9 @@ fig3.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='Monthl
 apply_monthly_xaxis(fig3, len(return_pivot))
 st.plotly_chart(fig3)
 
-# --- TOTAL PORTFOLIO RISK & RETURN ---
-
-st.subheader('Total Portfolio — Risk & Return')
-
+# total portfolio monthly return — single source of truth shared by the
+# "Total" line on the YTD chart and the Risk & Return metrics below, so every
+# portfolio-level return figure on this page derives from the same series
 total_df = monthly_df.groupby('date')[['inflows', 'outflows', 'end_value']].sum().sort_index()
 total_df['start_value'] = total_df['end_value'].shift().fillna(0)
 total_df['capital_gain'] = total_df['end_value'] - total_df['start_value'] - total_df['inflows'] + total_df['outflows']
@@ -79,6 +78,58 @@ total_df['capital_gain'] = total_df['end_value'] - total_df['start_value'] - tot
 total_df.iloc[0, total_df.columns.get_loc('capital_gain')] = 0
 total_df['monthly_return'] = total_df['capital_gain'] / total_df['start_value'].replace(0, np.nan)
 
+# cumulative capital gain % by account, restarting each calendar year
+#
+# Time-weighted return: monthly returns are chained geometrically within each
+# (account, year), so the line shows the year-to-date compounded return and
+# drops back near zero every January. Chaining (rather than a money-weighted
+# IRR) strips out the timing of the user's own deposits, which is what makes
+# accounts comparable on the same chart.
+st.subheader('Cumulative Capital Gain % by Account (YTD)')
+
+ytd_df = monthly_df.copy()
+ytd_df['year'] = ytd_df['date'].dt.year
+ytd_df['ytd_return'] = (ytd_df.groupby(['account', 'year'])['monthly_return']
+                        .transform(lambda r: (1 + r.fillna(0)).cumprod() - 1))
+
+ytd_pivot = ytd_df.pivot_table(index='date', columns='account', values='ytd_return').sort_index()
+
+# portfolio-wide line: compounds the combined portfolio's monthly returns —
+# the exact series behind the CAGR/volatility/drawdown metrics below — so the
+# total is capital-weighted (accounts summed first, larger accounts weigh more)
+ytd_pivot['Total'] = ((1 + total_df['monthly_return'].fillna(0))
+                      .groupby(total_df.index.year).cumprod() - 1)
+
+fig4 = px.line(ytd_pivot, x=ytd_pivot.index, y=ytd_pivot.columns, markers=True)
+fig4.update_layout(yaxis_tickformat=".0%", xaxis_title=None, yaxis_title='YTD Return %', legend_title='Account')
+fig4.update_traces(selector=dict(name='Total'), line=dict(width=3.5, color='#444444'))
+
+# vertical marker at each January so the reset reads as a new year starting,
+# not as a crash in returns; skipped for the first year (nothing resets there)
+for boundary_year in sorted(ytd_df.loc[ytd_df['year'] > ytd_df['year'].min(), 'year'].unique()):
+    fig4.add_vline(
+        # epoch ms, not a Timestamp: plotly's vline annotation placement chokes
+        # on datetime coordinates (tries to average them as numbers)
+        x=pd.Timestamp(int(boundary_year), 1, 1).value / 1e6,
+        line_dash="dash", line_width=1.5, line_color="rgba(214,120,42,0.75)",
+        annotation_text=str(boundary_year), annotation_position="top left",
+        annotation_font_color="rgba(214,120,42,0.9)",
+    )
+apply_monthly_xaxis(fig4, len(ytd_pivot))
+st.plotly_chart(fig4)
+st.caption(
+    "Time-weighted: each account's monthly returns are compounded within the calendar year, "
+    "so deposit/withdrawal timing doesn't distort the comparison. Resets every January. "
+    "**Total** compounds the combined portfolio's monthly return — the same series behind "
+    "the CAGR, volatility and drawdown figures below — so larger accounts weigh more."
+)
+
+# --- TOTAL PORTFOLIO RISK & RETURN ---
+
+st.subheader('Total Portfolio — Risk & Return')
+
+# metrics below use total_df['monthly_return'], computed above the YTD chart
+# and shared with its "Total" line
 n_months = len(total_df)
 
 if n_months < 2:
