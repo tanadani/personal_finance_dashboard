@@ -203,13 +203,14 @@ def render_position_table(data):
     detail = ib.position_detail(data["positions"], data["trades"])
     show = detail.assign(
         Description=detail["Description"].str.slice(0, 28),
-    )[["Symbol", "Description", "ISIN", "Quantity", "MarkPrice", "PositionValueGBP",
-       "CostBasisGBP", "UnrealizedPnLGBP", "UnrealPct", "Weight", "DaysHeld", "Contrib30d"]]
-    show.columns = ["Symbol", "Description", "ISIN", "Qty", "Mark", "Value £",
-                    "Cost £", "Unreal £", "Unreal %", "Weight", "Days held", "30d £"]
-    styled = _pnl_style(show, ["Unreal £", "Unreal %", "30d £"]).format({
-        "Qty": "{:,.0f}", "Mark": "{:,.2f}", "Value £": "£{:,.0f}", "Cost £": "£{:,.0f}",
-        "Unreal £": "£{:,.0f}", "Unreal %": "{:.1%}", "Weight": "{:.1%}", "30d £": "£{:,.0f}",
+    )[["Symbol", "Description", "PositionValueGBP", "UnrealizedPnLGBP", "UnrealPct",
+       "Weight", "DaysHeld", "Return1M", "Return2M", "Return3M", "Return6M"]]
+    show.columns = ["Symbol", "Description", "Value £", "Unreal £", "Unreal %",
+                    "Weight", "Days held", "1m %", "2m %", "3m %", "6m %"]
+    ret_cols = ["1m %", "2m %", "3m %", "6m %"]
+    styled = _pnl_style(show, ["Unreal £", "Unreal %"] + ret_cols).format({
+        "Value £": "£{:,.0f}", "Unreal £": "£{:,.0f}", "Unreal %": "{:.1%}",
+        "Weight": "{:.1%}", **{c: "{:.1%}" for c in ret_cols},
     })
     st.dataframe(styled, width="stretch")
 
@@ -327,10 +328,10 @@ render_kpi_strip(data)
 st.divider()
 render_risk_panel(data["risk"])
 st.divider()
+render_position_table(data)
+st.divider()
 render_nav_charts(data, benchmark)
 st.divider()
 render_contribution(data)
-st.divider()
-render_position_table(data)
 st.divider()
 render_logs(data)
