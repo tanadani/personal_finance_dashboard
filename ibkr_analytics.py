@@ -367,6 +367,16 @@ def unrealised_by_symbol(positions):
             .unstack().sort_index().fillna(0.0))
 
 
+def price_by_symbol(positions):
+    """Wide frame: date index, one column per symbol, values = mark price.
+
+    Left NaN (not zero-filled) before a symbol's first report date, so trailing
+    return lookbacks can tell "no price yet" apart from "price of zero".
+    """
+    return (positions.groupby(["ReportDate", "Symbol"])["MarkPrice"].first()
+            .unstack().sort_index())
+
+
 def position_detail(positions, trades):
     """One row per currently-open position (latest report date)."""
     last = positions["ReportDate"].max()
@@ -390,14 +400,24 @@ def position_detail(positions, trades):
         lambda s: int(np.busday_count(first_seen[s].date(), last.date()))
     )
 
-    # 30-day P&L contribution: change in unrealised P&L over ~30 calendar days
-    wide = unrealised_by_symbol(positions)
-    ref_date = last - pd.Timedelta(days=30)
-    ref_row = wide.loc[:ref_date]
-    ref = ref_row.iloc[-1] if len(ref_row) else wide.iloc[0] * 0.0
-    agg["Contrib30d"] = agg["Symbol"].map(
-        lambda s: wide[s].loc[last] - ref.get(s, 0.0) if s in wide.columns else 0.0
-    )
+    # trailing price returns over calendar-month lookback windows
+    prices = price_by_symbol(positions)
+    cur = prices.loc[last]
+
+    def calc_return(symbol, ref):
+        if symbol not in prices.columns:
+            return np.nan
+        r, c = ref.get(symbol), cur.get(symbol)
+        if r is None or c is None or pd.isna(r) or pd.isna(c) or r == 0:
+            return np.nan
+        return c / r - 1
+
+    for months in (1, 2, 3, 6):
+        ref_date = last - pd.DateOffset(months=months)
+        ref_row = prices.loc[:ref_date]
+        ref = ref_row.iloc[-1] if len(ref_row) else pd.Series(dtype=float)
+        agg[f"Return{months}M"] = agg["Symbol"].map(lambda s: calc_return(s, ref))
+
     return agg.sort_values("PositionValueGBP", ascending=False).reset_index(drop=True)
 
 
