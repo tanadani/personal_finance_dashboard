@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import streamlit as st
-from utils import get_db_connection, get_currency, DATE_FORMAT, apply_monthly_xaxis
+from utils import get_db_connection, get_currency, load_monthly_positions, apply_monthly_xaxis
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -12,21 +12,14 @@ CUR = get_currency()
 # title
 st.title('Investments')
 
-# loading monthly logs
-
-monthly = c.execute("SELECT * FROM monthly_logs").fetchall()
-monthly_df = pd.DataFrame(monthly, columns=['date', 'account', 'inflows', 'outflows', 'end_value', 'unique_index'])
+# loading monthly logs — one row per (account, month), duplicates collapsed and
+# cross-account flows already folded into inflows/outflows, so an account that
+# pays its interest away to another account is still credited with earning it
+monthly_df = load_monthly_positions(c)
 
 if monthly_df.empty:
     st.info("No investment data recorded yet. Add monthly positions on the **Data Insert** page.")
     st.stop()
-
-monthly_df['date'] = pd.to_datetime(monthly_df['date'], format=DATE_FORMAT)
-
-# collapse duplicate (account, date) rows — e.g. merged sub-accounts that both
-# reported in the same month — before computing month-over-month changes
-monthly_df = (monthly_df.groupby(['account', 'date'], as_index=False)
-               [['inflows', 'outflows', 'end_value']].sum())
 
 # calculate per-account capital gain and monthly return
 monthly_df = monthly_df.sort_values(['account', 'date'])
@@ -57,6 +50,46 @@ fig2 = px.bar(gain_pivot, x=gain_pivot.index, y=gain_pivot.columns)
 fig2.update_layout(barmode='relative', xaxis_title=None, yaxis_title=f'Capital Gain ({CUR})', legend_title='Account')
 apply_monthly_xaxis(fig2, len(gain_pivot))
 st.plotly_chart(fig2)
+
+# income vs price return
+#
+# A distribution paid to another account is added back as an outflow, so it is
+# already inside the capital gain above. Splitting it out separates the cash an
+# account generated from the price move underneath — the reason a coupon is
+# worth recording as a distribution rather than a plain transfer. Computed off
+# the months where a gain exists at all (each account's first month is zeroed
+# above), so the two halves always add back to the figure shown.
+gain_months = monthly_df.drop(index=first_idx)
+
+if gain_months[['dist_out', 'dist_in']].to_numpy().sum() > 0:
+    st.subheader('Income vs Price Return by Account')
+
+    split = gain_months.groupby('account').agg(
+        capital_gain=('capital_gain', 'sum'),
+        income=('dist_out', 'sum'),
+        received=('dist_in', 'sum'),
+    )
+    split['price'] = split['capital_gain'] - split['income']
+    split = split[(split[['capital_gain', 'income', 'received']] != 0).any(axis=1)]
+
+    money = lambda v: f"{CUR}{v:,.0f}"  # noqa: E731 — local display helper
+    st.dataframe(
+        pd.DataFrame({
+            'Account': split.index,
+            'Capital Gain': split['capital_gain'].map(money),
+            'of which Income': split['income'].map(money),
+            'of which Price': split['price'].map(money),
+            'Distributions Received': split['received'].map(money),
+        }),
+        hide_index=True, width="stretch",
+    )
+    st.caption(
+        "**Income** is interest, coupons and dividends this account paid out to another "
+        "account, recorded as distributions on the Data Insert page. **Price** is the rest "
+        "of the gain — what the holdings themselves did. **Distributions Received** is cash "
+        "that arrived from another account: it is not this account's return, which is why "
+        "it sits outside the capital gain rather than inside it."
+    )
 
 # capital gain % by account
 st.subheader('Capital Gain % by Account')
