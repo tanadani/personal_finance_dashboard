@@ -2,7 +2,9 @@ import streamlit as st
 import pandas as pd
 import datetime as dt
 from utils import (get_db_connection, month_input, get_currency, export_db_to_csv,
-                   backup_db, DATE_FORMAT, get_setting, set_setting)
+                   backup_db, DATE_FORMAT, get_setting, set_setting,
+                   load_account_flows, load_monthly_positions,
+                   FLOW_DISTRIBUTION, FLOW_KIND_LABELS)
 
 conn = get_db_connection()
 c = conn.cursor()
@@ -26,10 +28,14 @@ all_data_df = pd.DataFrame(all_data, columns=['rowid', 'date', 'platform', 'infl
 salary_data = c.execute("SELECT rowid, * FROM salary_logs").fetchall()
 salary_data = pd.DataFrame(salary_data, columns=['rowid', 'date', 'income', 'index'])
 
+flows_df = load_account_flows(c)
+
 # adding randomization option
 if st.session_state.randomize:
     all_data_df.loc[:, ['inflows', 'outflows', 'end_value']] = 0
     salary_data.loc[:, 'income'] = 0
+    if not flows_df.empty:
+        flows_df.loc[:, 'amount'] = 0
 
 # parsed datetime columns for sorting/filtering — the stored 'date' column is
 # ISO text, sortable as a string, but a real datetime is still handier here
@@ -74,6 +80,16 @@ record_ts = pd.Timestamp(record_date)
 existing_this_month = all_data_df[all_data_df['date'] == date]
 income_this_month = salary_data[salary_data['date'] == date]
 
+month_flows = flows_df[flows_df['date'] == record_ts] if not flows_df.empty else flows_df
+
+# net amount each account gives up (−) or receives (+) through this month's
+# cross-account flows, shown read-only in the grid so it's obvious what is
+# already accounted for and must not be typed into Inflows/Outflows as well
+net_flow_by_account = {}
+for _, f in month_flows.iterrows():
+    net_flow_by_account[f['from_account']] = net_flow_by_account.get(f['from_account'], 0) - f['amount']
+    net_flow_by_account[f['to_account']] = net_flow_by_account.get(f['to_account'], 0) + f['amount']
+
 st.subheader(record_date.strftime('%B %Y'))
 
 # --- income, with last known value shown for context ---
@@ -111,9 +127,11 @@ for acct in active_accounts:
     else:
         inflows_v, outflows_v = 0, 0
         end_value_v = int(last_val) if last_val is not None else 0
+    net_flow = net_flow_by_account.get(acct, 0)
     grid_rows.append({
         'Account': acct,
         'Last Value': f"{CUR}{int(last_val):,}" if last_val is not None else "—",
+        'Flows': f"{'+' if net_flow > 0 else '−'}{CUR}{abs(net_flow):,.0f}" if net_flow else "—",
         'Inflows': inflows_v,
         'Outflows': outflows_v,
         'End Value': end_value_v,
@@ -124,6 +142,7 @@ if grid_rows:
 else:
     grid_df = pd.DataFrame({
         'Account': pd.Series(dtype='str'), 'Last Value': pd.Series(dtype='str'),
+        'Flows': pd.Series(dtype='str'),
         'Inflows': pd.Series(dtype='int64'), 'Outflows': pd.Series(dtype='int64'),
         'End Value': pd.Series(dtype='int64'),
     })
@@ -136,6 +155,11 @@ edited = st.data_editor(
     column_config={
         "Account": st.column_config.TextColumn("Account", required=True),
         "Last Value": st.column_config.TextColumn("Last Value", disabled=True),
+        "Flows": st.column_config.TextColumn(
+            "Flows", disabled=True,
+            help="Net effect of this month's cross-account flows, recorded below. "
+                 "Already counted — do not repeat it in Inflows or Outflows.",
+        ),
         "Inflows": st.column_config.NumberColumn(f"Inflows ({CUR})", step=1),
         "Outflows": st.column_config.NumberColumn(f"Outflows ({CUR})", step=1),
         "End Value": st.column_config.NumberColumn(f"End Value ({CUR})", step=1),
@@ -168,6 +192,143 @@ if st.button("Save Month", type="primary"):
     st.session_state['data_insert_msg'] = f"{record_date.strftime('%B %Y')} saved!"
     st.rerun()
 
+# --- CROSS-ACCOUNT FLOWS ---
+#
+# Money moving between two accounts you already track. Entered as one row with a
+# single amount, then expanded into an outflow on the payer and an inflow on the
+# receiver everywhere in the app — so the two legs can never drift apart, and
+# because they cancel when accounts are summed, household savings and expenses
+# are left untouched while the return lands on the account that earned it.
+
+st.divider()
+st.subheader("Cross-account flows")
+st.caption(
+    "For money moving between two of your own accounts — a bond account paying its "
+    "coupon into a current account, or capital moved from cash into a broker. Enter "
+    "it here **instead of** as an inflow/outflow above, and only once: the app books "
+    "both sides for you. Date it to the month the receiving account's balance "
+    "actually includes the money."
+)
+
+if not accounts:
+    st.info("Add account positions above first — flows connect two accounts you already track.")
+else:
+    kind_by_label = {label: kind for kind, label in FLOW_KIND_LABELS.items()}
+
+    flow_rows = [
+        {
+            'From': f['from_account'], 'To': f['to_account'],
+            'Amount': int(f['amount']),
+            'Kind': FLOW_KIND_LABELS.get(f['kind'], FLOW_KIND_LABELS[FLOW_DISTRIBUTION]),
+        }
+        for _, f in month_flows.iterrows()
+    ]
+    flows_grid = pd.DataFrame(flow_rows) if flow_rows else pd.DataFrame({
+        'From': pd.Series(dtype='str'), 'To': pd.Series(dtype='str'),
+        'Amount': pd.Series(dtype='int64'), 'Kind': pd.Series(dtype='str'),
+    })
+
+    flows_edited = st.data_editor(
+        flows_grid,
+        num_rows="dynamic",
+        hide_index=True,
+        width="stretch",
+        column_config={
+            "From": st.column_config.SelectboxColumn(
+                "From account", options=accounts, required=True,
+                help="The account the money leaves — for a coupon, the one holding the bonds."),
+            "To": st.column_config.SelectboxColumn(
+                "To account", options=accounts, required=True,
+                help="The account the money arrives in."),
+            "Amount": st.column_config.NumberColumn(f"Amount ({CUR})", step=1, min_value=0),
+            "Kind": st.column_config.SelectboxColumn(
+                "Kind", options=list(FLOW_KIND_LABELS.values()), required=True,
+                help="Distribution = the payer earned this, so it counts as that account's "
+                     "return. Transfer = capital moving, which is nobody's return."),
+        },
+        key="flows_grid",
+    )
+
+    st.caption(f"Saving will overwrite any existing {record_date.strftime('%B %Y')} flows.")
+
+    if st.button("Save Flows"):
+        rows = flows_edited.copy()
+        rows['From'] = rows['From'].fillna('').astype(str).str.strip()
+        rows['To'] = rows['To'].fillna('').astype(str).str.strip()
+        rows['Amount'] = pd.to_numeric(rows['Amount'], errors='coerce').fillna(0)
+        rows = rows[(rows['From'] != '') | (rows['To'] != '') | (rows['Amount'] != 0)]
+
+        problems = []
+        for n, r in enumerate(rows.itertuples(index=False), start=1):
+            if not r.From or not r.To:
+                problems.append(f"Row {n}: pick both a From and a To account.")
+            elif r.From == r.To:
+                problems.append(f"Row {n}: From and To must be different accounts.")
+            if r.Amount <= 0:
+                problems.append(f"Row {n}: amount must be greater than zero.")
+
+        if problems:
+            for p in problems:
+                st.error(p)
+        else:
+            backup_db(conn)
+            c.execute("DELETE FROM account_flows WHERE date = ?", (date,))
+            for r in rows.itertuples(index=False):
+                conn.execute(
+                    "INSERT INTO account_flows (date, from_account, to_account, amount, kind)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (date, r.From, r.To, int(r.Amount),
+                     kind_by_label.get(r.Kind, FLOW_DISTRIBUTION)),
+                )
+            conn.commit()
+            export_db_to_csv(conn)
+            st.session_state['data_insert_msg'] = f"{record_date.strftime('%B %Y')} flows saved!"
+            st.rerun()
+
+    # --- reconciliation: what the saved flows do to this month's figures ---
+    #
+    # The one thing that can still go wrong is entering the same money twice
+    # (once here, once as an inflow in the grid above), which no amount of
+    # pairing can detect on its own. Showing the resulting capital gain makes
+    # it self-evident: an account that only received a distribution should
+    # land on zero, and a double entry drags it to minus the amount.
+    if not month_flows.empty:
+        positions = load_monthly_positions(c)  # warns about any unapplied flows
+        positions = positions.sort_values(['account', 'date'])
+        positions['start_value'] = positions.groupby('account')['end_value'].shift().fillna(0)
+        positions['capital_gain'] = (positions['end_value'] - positions['start_value']
+                                     - positions['inflows'] + positions['outflows'])
+        # match the Investments page: an account's first month has no prior
+        # value, so its gain isn't meaningful and is shown as zero
+        positions.loc[positions.groupby('account')['date'].idxmin(), 'capital_gain'] = 0
+
+        touched = set(month_flows['from_account']) | set(month_flows['to_account'])
+        check = positions[(positions['date'] == record_ts) & positions['account'].isin(touched)]
+
+        if not check.empty:
+            st.write("**Effect on this month** (from saved data)")
+            money = lambda v: f"{CUR}{v:,.0f}"  # noqa: E731 — local display helper
+            st.dataframe(
+                pd.DataFrame({
+                    'Account': check['account'],
+                    'Start': check['start_value'].map(money),
+                    'End': check['end_value'].map(money),
+                    'Inflows entered': (check['inflows'] - check['flow_in']).map(money),
+                    'Outflows entered': (check['outflows'] - check['flow_out']).map(money),
+                    'From flows': (check['flow_in'] - check['flow_out']).map(
+                        lambda v: f"{'+' if v > 0 else '−'}{CUR}{abs(v):,.0f}" if v else "—"),
+                    'Capital gain': check['capital_gain'].map(money),
+                }),
+                hide_index=True, width="stretch",
+            )
+            st.caption(
+                "An account that only *received* a distribution should show a capital gain of "
+                "roughly zero — it didn't earn the money, it was handed it. If it instead shows "
+                "about minus the amount received, the same money has also been typed into its "
+                "Inflows in the grid above: remove it there. The paying account should show the "
+                "distribution as its gain."
+            )
+
 # --- SHOW ALL ---
 
 if st.toggle('Show all saved data'):
@@ -178,6 +339,9 @@ if st.toggle('Show all saved data'):
     with col2:
         st.write('Income logs')
         st.write(salary_data.drop(columns=['rowid', 'index', 'date_dt']))
+    if not flows_df.empty:
+        st.write('Cross-account flows (all months)')
+        st.write(flows_df.drop(columns=['rowid']))
 
 # --- BULK IMPORT ---
 
@@ -326,11 +490,25 @@ if chosen_table == 'Monthly logs':
 
         if submitted:
             backup_db(conn)
+            new_date_str = new_date.strftime(DATE_FORMAT)
             c.execute("""
                 UPDATE monthly_logs
                 SET date = ?, account = ?, inflows = ?, outflows = ?, end_value = ?
                 WHERE rowid = ?
-            """, (new_date.strftime(DATE_FORMAT), account, inflows, outflows, end_value, int(record["rowid"])))
+            """, (new_date_str, account, inflows, outflows, end_value, int(record["rowid"])))
+            # cross-account flows reference accounts by name, so a rename here has
+            # to carry them along or they'd point at an account that no longer
+            # exists and be dropped. Scoped to this row's month: renaming one
+            # month's entry must not silently re-point another month's flows.
+            # A moved *date* isn't followed — the flow's own date belongs to both
+            # its legs, so it's left for the user to re-date, and the unapplied-flow
+            # warning points them at it.
+            if account != record["platform"] and new_date_str == record["date"]:
+                for leg in ("from_account", "to_account"):
+                    c.execute(
+                        f"UPDATE account_flows SET {leg} = ? WHERE {leg} = ? AND date = ?",
+                        (account, record["platform"], record["date"]),
+                    )
             conn.commit()
             export_db_to_csv(conn)
             st.session_state['data_insert_msg'] = "Record updated successfully!"

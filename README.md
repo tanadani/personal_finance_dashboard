@@ -16,7 +16,12 @@ Insert** page and every chart populates automatically.
   fiscal-year summaries with time-weighted return.
 - **Investments** — per-account value, capital gains, and return % over time,
   plus whole-portfolio risk statistics (CAGR, annualised volatility, max
-  drawdown, Sharpe ratio).
+  drawdown, Sharpe ratio). Where cross-account flows are used, each account's
+  gain also splits into the income it paid out and the price move underneath.
+- **Cross-account flows** — for money moving between two accounts you already
+  track, such as a bond account paying its coupon into a current account.
+  Recorded once, booked on both sides, so the return lands on the account that
+  earned it without inflating your savings.
 - **Projections** — a Monte Carlo forward projection of your liquid assets
   (3,000 simulated paths shown as a median line with 10–90 and 25–75
   percentile bands) from your current savings rate, salary growth, optional
@@ -68,7 +73,9 @@ controls (currency, randomize, and the IBKR feature toggle) on every page.
 2. Open **Data Insert** (left sidebar) and add:
    - your monthly **income**, and
    - your account **positions** (inflows, outflows, end-of-month value) — one row
-     per account per month.
+     per account per month. Count only money entering or leaving your accounts
+     from outside; anything moving between two accounts you track goes in the
+     **Cross-account flows** section instead.
 3. Visit **Analytics**, **Investments**, and **Projections** — they fill in
    automatically. Use **Travels** any time to log trips.
 4. If you have a private/workplace pension, log a snapshot on the **Pension**
@@ -110,8 +117,9 @@ You never need to do anything — the app protects itself:
   before any database schema upgrade.
 - **CSV mirrors** — every table is also re-exported to a flat CSV under
   `data/` on each save (`monthly_logs_export.csv`, `salary_logs_export.csv`,
-  `trips_logs_export.csv`, `pension_logs_export.csv`), a human-readable
-  last-resort copy you can open in any spreadsheet.
+  `trips_logs_export.csv`, `pension_logs_export.csv`,
+  `account_flows_export.csv`), a human-readable last-resort copy you can open
+  in any spreadsheet.
 
 **To recover** from a bad edit or accidental delete: close the app, pick the
 snapshot you want from `data/backups/` (filenames are
@@ -155,8 +163,23 @@ Records are keyed to the **1st of each month** (the Data Insert page enforces th
 with a month/year picker). If the same account is entered twice for the same month,
 the values are summed.
 
+`inflows` and `outflows` mean money crossing the boundary of everything you
+track — that's why `savings` is simply their net. Money moving *between* two
+accounts you already track is not that, and must be recorded as a cross-account
+flow instead (see below), never as an inflow/outflow.
+
 A few conventions to be aware of:
 
+- **Cross-account flows** — one row (date, from, to, amount, kind) for money
+  moving between two tracked accounts. It is expanded into an outflow on the
+  payer and an inflow on the receiver, so the same amount hits both sides and
+  cancels when accounts are summed: household savings and expenses are
+  untouched, while the payer keeps the return. A **distribution** (interest,
+  coupon, dividend) leaves the payer's holdings unchanged, so it books as that
+  account's capital gain; a **transfer** takes the value with it, so it books
+  as nobody's return. Both legs must have a position row in that month, or the
+  flow is skipped whole and flagged — half of a flow would move money in or out
+  of the tracked perimeter and corrupt savings.
 - **First month** — the earliest month has no prior `start_value`, so its
   capital gain and expenses are zeroed, but its savings (= net inflows) are
   kept: that's your opening balances entering the cumulative totals. The

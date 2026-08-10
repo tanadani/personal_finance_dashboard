@@ -131,6 +131,24 @@ def init_db(conn):
             unique_index INTEGER
         )
     """)
+    # Money moving between two *tracked* accounts — a bond account paying its
+    # coupon into a current account, a rebalance from cash into a broker.
+    # monthly_logs' inflows/outflows are assumed to be external (savings is
+    # defined as their net), so an internal move entered there would either
+    # inflate savings or misattribute the return. Recording it here instead
+    # keeps both legs tied to one amount: they are expanded into an outflow on
+    # from_account and an inflow on to_account at read time, so they cancel in
+    # the household totals while still crediting the return to the account that
+    # actually earned it. See load_monthly_positions.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS account_flows (
+            date         TEXT,
+            from_account TEXT,
+            to_account   TEXT,
+            amount       INTEGER,
+            kind         TEXT
+        )
+    """)
     conn.commit()
 
 
@@ -291,6 +309,7 @@ def export_db_to_csv(conn):
         "salary_logs":  "salary_logs_export.csv",
         "trips_logs":   "trips_logs_export.csv",
         "pension_logs": "pension_logs_export.csv",
+        "account_flows": "account_flows_export.csv",
     }
     for table, filename in tables.items():
         try:
@@ -311,6 +330,125 @@ def randomize(df):
     return randomized_df
 
 
+# ---------------------------------------------------------------------------
+# Cross-account flows
+#
+# Both kinds expand to exactly the same pair of legs (an outflow on the payer,
+# an inflow on the receiver) — the arithmetic is identical, and in both cases
+# the payer's capital gain comes out right: a distribution leaves the payer's
+# valuation untouched, so it books as gain, while a capital transfer takes the
+# value with it, so it books as nothing. The kind records *why* the money moved,
+# which is what lets the Investments page split an account's capital gain into
+# the income it paid out and the price move underneath.
+# ---------------------------------------------------------------------------
+FLOW_DISTRIBUTION = "distribution"
+FLOW_TRANSFER = "transfer"
+
+FLOW_KIND_LABELS = {
+    FLOW_DISTRIBUTION: "Distribution (interest / coupon / dividend)",
+    FLOW_TRANSFER: "Transfer (moving capital)",
+}
+
+_FLOW_COLUMNS = ['rowid', 'date', 'from_account', 'to_account', 'amount', 'kind']
+
+
+def load_account_flows(c):
+    """Load cross-account flows as a dataframe, oldest first.
+
+    Returns an empty frame with the expected columns when none are recorded,
+    so callers can guard on `.empty` and still reference columns. `rowid` is
+    included for edit/delete.
+    """
+    rows = c.execute(
+        "SELECT rowid, date, from_account, to_account, amount, kind FROM account_flows"
+    ).fetchall()
+    df = pd.DataFrame(rows, columns=_FLOW_COLUMNS)
+    if df.empty:
+        return df
+
+    df['date'] = pd.to_datetime(df['date'], format=DATE_FORMAT)
+    df['amount'] = df['amount'].astype(float)
+    return df.sort_values(['date', 'from_account']).reset_index(drop=True)
+
+
+_POSITION_COLUMNS = ['date', 'account', 'inflows', 'outflows', 'end_value',
+                     'flow_in', 'flow_out', 'dist_in', 'dist_out']
+
+
+def load_monthly_positions(c, warn=True):
+    """Monthly account positions, with cross-account flows folded in.
+
+    The single source of truth for "what each account did each month", shared by
+    Analytics (via generate_full_log) and Investments so the two can't drift.
+    One row per (account, month), duplicate entries for the same pair summed.
+
+    `inflows` and `outflows` come back with each account's leg of any recorded
+    account_flows row already added in, so the usual
+    `end_value − start_value − inflows + outflows` gives the right capital gain
+    without the caller knowing flows exist. The legs are also returned
+    separately (`flow_in`/`flow_out`, and the distribution-only `dist_in`/
+    `dist_out`) for callers that need to break the figure back apart.
+
+    Because a flow adds the same amount to one account's inflows and another's
+    outflows, it cancels exactly when accounts are summed — household savings
+    and expenses are untouched by construction. That guarantee only holds if
+    both legs are applied, so a flow whose from- or to-account has no position
+    row that month is skipped whole rather than half-applied, and reported when
+    `warn` is set.
+    """
+    rows = c.execute(
+        "SELECT date, account, inflows, outflows, end_value FROM monthly_logs"
+    ).fetchall()
+    positions = pd.DataFrame(rows, columns=['date', 'account', 'inflows', 'outflows', 'end_value'])
+    if positions.empty:
+        return pd.DataFrame(columns=_POSITION_COLUMNS)
+
+    positions['date'] = pd.to_datetime(positions['date'], format=DATE_FORMAT)
+    positions = (positions.groupby(['account', 'date'], as_index=False)
+                 [['inflows', 'outflows', 'end_value']].sum())
+    for col in ('flow_in', 'flow_out', 'dist_in', 'dist_out'):
+        positions[col] = 0.0
+
+    flows = load_account_flows(c)
+    if not flows.empty:
+        logged = set(zip(positions['account'], positions['date']))
+        both_legs_logged = flows.apply(
+            lambda f: (f['from_account'], f['date']) in logged
+            and (f['to_account'], f['date']) in logged,
+            axis=1,
+        )
+        applied = flows[both_legs_logged]
+        skipped = flows[~both_legs_logged]
+
+        if not skipped.empty and warn:
+            months = ", ".join(sorted(skipped['date'].dt.strftime('%b %Y').unique()))
+            st.warning(
+                f"{len(skipped)} cross-account flow(s) ignored ({months}) — both the "
+                "paying and the receiving account need a position row in that month. "
+                "Add the missing account position on the Data Insert page."
+            )
+
+        if not applied.empty:
+            positions = positions.set_index(['account', 'date'])
+            distributions = applied[applied['kind'] == FLOW_DISTRIBUTION]
+            for col, source, key in (
+                ('flow_out', applied, 'from_account'),
+                ('flow_in', applied, 'to_account'),
+                ('dist_out', distributions, 'from_account'),
+                ('dist_in', distributions, 'to_account'),
+            ):
+                legs = (source.groupby([key, 'date'])['amount'].sum()
+                        .rename_axis(['account', 'date']))
+                positions[col] = legs.reindex(positions.index).fillna(0.0)
+            positions['inflows'] = positions['inflows'] + positions['flow_in']
+            positions['outflows'] = positions['outflows'] + positions['flow_out']
+            positions = positions.reset_index()
+
+    return (positions[_POSITION_COLUMNS]
+            .sort_values(['account', 'date'])
+            .reset_index(drop=True))
+
+
 _FULL_LOG_COLUMNS = ['income', 'inflows', 'outflows', 'end_value', 'start_value',
                      'capital_gain', 'expenses', 'savings', 'total_income',
                      'total_income_rolling', 'cumulative_capital_gains',
@@ -318,9 +456,12 @@ _FULL_LOG_COLUMNS = ['income', 'inflows', 'outflows', 'end_value', 'start_value'
 
 
 def generate_full_log(c, randomized=False):
-    # loading monthly logs and salary logs from database and formatting
-    monthly = c.execute(""" SELECT * from monthly_logs""").fetchall()
-    monthly_df = pd.DataFrame(monthly, columns=['date', 'platform', 'inflows', 'outflows', 'end_value', 'index'])
+    # loading monthly logs and salary logs from database and formatting.
+    # positions come through the shared loader, so cross-account flows are
+    # already in inflows/outflows — a no-op at this level, since summing the
+    # accounts cancels both legs of every flow, which is exactly what keeps
+    # savings and expenses free of internal transfers.
+    monthly_df = load_monthly_positions(c)
 
     income = c.execute(""" SELECT * from salary_logs""").fetchall()
     income_df = pd.DataFrame(income, columns=['date', 'income', 'index'])
@@ -330,12 +471,11 @@ def generate_full_log(c, randomized=False):
     if monthly_df.empty or income_df.empty:
         return pd.DataFrame(columns=_FULL_LOG_COLUMNS)
 
-    monthly_df['date'] = pd.to_datetime(monthly_df['date'], format=DATE_FORMAT)
     income_df['date'] = pd.to_datetime(income_df['date'], format=DATE_FORMAT)
     income_df.set_index('date', inplace=True)
 
     # creating a monthly dataframe
-    total_df = monthly_df.groupby('date').sum()[['inflows', 'outflows', 'end_value']]
+    total_df = monthly_df.groupby('date')[['inflows', 'outflows', 'end_value']].sum()
 
     # creating random option
     if randomized:
