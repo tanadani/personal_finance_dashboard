@@ -157,6 +157,39 @@ st.caption(
     "the CAGR, volatility and drawdown figures below — so larger accounts weigh more."
 )
 
+# --- ASSET ALLOCATION ---
+#
+# Each account's share of the portfolio's end value, month by month. Bars always
+# sum to 100%, so the chart reads as composition drift — which sleeve is gaining
+# or losing ground — rather than growth, which the value chart at the top covers.
+st.subheader('Asset Allocation by Account')
+
+# reuses the end-value pivot built for the first chart; months with nothing in
+# them have no meaningful split, so they drop out rather than divide by zero
+alloc_totals = pivot.sum(axis=1)
+alloc_pivot = pivot.div(alloc_totals.replace(0, np.nan), axis=0).dropna(how='all')
+
+if alloc_pivot.empty:
+    st.info("No account values recorded yet, so there is no allocation to split.")
+else:
+    fig5 = px.bar(alloc_pivot, x=alloc_pivot.index, y=alloc_pivot.columns)
+    fig5.update_layout(
+        barmode='stack',
+        xaxis_title=None,
+        yaxis_title='Share of Portfolio',
+        yaxis_tickformat=".0%",
+        yaxis_range=[0, 1],
+        legend_title='Account',
+    )
+    fig5.update_traces(hovertemplate='%{fullData.name}: %{y:.1%}<extra></extra>')
+    apply_monthly_xaxis(fig5, len(alloc_pivot))
+    st.plotly_chart(fig5)
+    st.caption(
+        "Percentage of total portfolio value held in each account at each month end. "
+        "Shares are computed from end values, so the mix moves both with contributions "
+        "and with performance."
+    )
+
 # --- TOTAL PORTFOLIO RISK & RETURN ---
 
 st.subheader('Total Portfolio — Risk & Return')
