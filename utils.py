@@ -450,8 +450,8 @@ def load_monthly_positions(c, warn=True):
 
 
 _FULL_LOG_COLUMNS = ['income', 'inflows', 'outflows', 'end_value', 'start_value',
-                     'capital_gain', 'expenses', 'savings', 'total_income',
-                     'total_income_rolling', 'cumulative_capital_gains',
+                     'capital_gain', 'expenses', 'savings', 'total_savings',
+                     'total_savings_rolling', 'cumulative_capital_gains',
                      'cumulative_savings', 'date']
 
 
@@ -494,8 +494,11 @@ def generate_full_log(c, randomized=False):
     # distorted by that opening amount exclude the first month at render time.
     full_data.loc[total_df.index[0], 'expenses'] = 0
     full_data.loc[total_df.index[0], 'capital_gain'] = 0
-    full_data['total_income'] = full_data['savings'] + full_data['capital_gain']
-    full_data['total_income_rolling'] = full_data['total_income'].rolling(3).mean().fillna(0)
+    # what the month actually added to liquid net worth: the part of income not
+    # spent, plus what the investments did. Not "income" — it leaves out the
+    # income that was spent, and counts gains that were never income at all.
+    full_data['total_savings'] = full_data['savings'] + full_data['capital_gain']
+    full_data['total_savings_rolling'] = full_data['total_savings'].rolling(3).mean().fillna(0)
 
     # drop months with missing income or position data and warn the user
     rows_before = len(full_data)
