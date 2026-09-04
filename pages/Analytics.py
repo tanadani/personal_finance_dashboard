@@ -112,9 +112,9 @@ fig2.for_each_trace(
 fig2.add_trace(
     go.Scatter(
         x=monthly_data['date'],
-        y=monthly_data['total_income'],
+        y=monthly_data['total_savings'],
         mode='lines+markers',
-        name='Total Income', line_color='blue'
+        name='Total Savings', line_color='blue'
     )
 )
 fig2.update_layout(xaxis_title=None, yaxis_title=None)
@@ -141,6 +141,30 @@ if focus_view:
                                  showarrow=False, font=dict(size=10))
 
 st.plotly_chart(fig2)
+
+# typical month over the trailing year
+#
+# Median rather than mean: bonus months and one-off market swings pull an
+# average away from what a normal month looks like, and "what does a typical
+# month add?" is the question this figure is meant to answer. Runs off the same
+# first-month-excluded frame as the chart above, so the opening balances don't
+# count as a month of saving.
+trailing = monthly_data.tail(12)
+
+if trailing.empty:
+    st.info("Not enough months recorded yet to show a typical month.")
+else:
+    median_total = trailing['total_savings'].median()
+    window = f"{trailing['date'].iloc[0]:%b %Y} – {trailing['date'].iloc[-1]:%b %Y}"
+
+    st.metric(f"Median Monthly Total Savings ({len(trailing)}m)", f"{CUR}{median_total:,.0f}")
+    st.caption(
+        f"Median of savings + capital gains across {window}. "
+        "Median, not average, so a single bonus or a sharp market month doesn't "
+        "distort what a normal month looks like."
+        + ("" if len(trailing) == 12 else
+           f" Only {len(trailing)} month(s) of data available so far, not a full year.")
+    )
 
 # monthly expenses
 
